@@ -1,0 +1,232 @@
+from PIL import Image, ImageTk
+from torch import nn
+import torch
+import tkinter as tk
+
+
+class Cannot(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.count_to_feat = nn.Linear(73, 64)
+        self.friend_feat = nn.MultiheadAttention(64, 8, batch_first=True, dropout=0.2)
+        self.enemy_feat = nn.MultiheadAttention(64, 8, batch_first=True, dropout=0.2)
+        self.feat_to_win = nn.Sequential(
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+        )
+
+    def forward(self, left_count, right_count):
+        left_feat = self.count_to_feat(left_count)
+        right_feat = self.count_to_feat(right_count)
+
+        left_friend_feat, _ = self.friend_feat(
+            query=left_feat,
+            key=left_feat,
+            value=left_feat,
+            need_weights=False
+        )
+        right_friend_feat, _ = self.friend_feat(
+            query=right_feat,
+            key=right_feat,
+            value=right_feat,
+            need_weights=False
+        )
+
+        left_enemy_feat, _ = self.enemy_feat(
+            query=left_feat,
+            key=right_feat,
+            value=right_feat,
+            need_weights=False
+        )
+        right_enemy_feat, _ = self.enemy_feat(
+            query=right_feat,
+            key=left_feat,
+            value=left_feat,
+            need_weights=False
+        )
+
+        left_total_feat = left_friend_feat + left_enemy_feat
+        right_total_feat = right_friend_feat + right_enemy_feat
+
+        left_win = self.feat_to_win(left_total_feat)
+        right_win = self.feat_to_win(right_total_feat)
+
+        delta = torch.zeros(64, 2)
+        for i in range(64):
+            delta[i][0] = left_win[i][0] - right_win[i][0]
+        return delta
+
+def main():
+    model = torch.load('cannot_mgc_1_best.pth', weights_only=False)
+    model.eval()
+
+    test_lc = torch.zeros(1, 1, 73)
+    test_rc = torch.zeros(1, 1, 73)
+    test_lc, test_rc = test_lc.cuda(), test_rc.cuda()
+
+    l_exist = []
+    r_exist = []
+
+    def compute():
+        l_exist = []
+        r_exist = []
+
+        for i in range(61):
+            test_lc[0][0][i] = int_vars_lc[i].get()
+            test_rc[0][0][i] = int_vars_rc[i].get()
+            if test_lc[0][0][i] > 0:
+                l_exist.append(i)
+            if test_rc[0][0][i] > 0:
+                r_exist.append(i)
+        for i in range(12):
+            test_lc[0][0][i + 61] = int_vars_court[i].get()
+            test_rc[0][0][i + 61] = int_vars_court[i].get()
+
+        for i in range(3):
+            if i < len(l_exist):
+                j = l_exist[i]
+                tk.Label(root, image=images[j], width=70, height=70).place(x=410 - 80 * i, y=850)
+                tk.Entry(root, textvariable=int_vars_lc[j], width=10).place(x=410 - 80 * i, y=930)
+            else:
+                j = 61
+                tk.Label(root, image=images[j], width=70, height=70).place(x=410 - 80 * i, y=850)
+                tk.Entry(root, width=10).place(x=410 - 80 * i, y=930)
+
+        for i in range(3):
+            if i < len(r_exist):
+                j = r_exist[i]
+                tk.Label(root, image=images[j], width=70, height=70).place(x=1220 + 80 * i, y=850)
+                tk.Entry(root, textvariable=int_vars_rc[j], width=10).place(x=1220 + 80 * i, y=930)
+            else:
+                j = 61
+                tk.Label(root, image=images[j], width=70, height=70).place(x=1220 + 80 * i, y=850)
+                tk.Entry(root, width=10).place(x=1220 + 80 * i, y=930)
+
+        with torch.no_grad():
+            left_feat = model.count_to_feat(test_lc)
+            right_feat = model.count_to_feat(test_rc)
+
+            left_friend_feat, _ = model.friend_feat(
+                query=left_feat,
+                key=left_feat,
+                value=left_feat,
+                need_weights=False
+            )
+            right_friend_feat, _ = model.friend_feat(
+                query=right_feat,
+                key=right_feat,
+                value=right_feat,
+                need_weights=False
+            )
+
+            left_enemy_feat, _ = model.enemy_feat(
+                query=left_feat,
+                key=right_feat,
+                value=right_feat,
+                need_weights=False
+            )
+            right_enemy_feat, _ = model.enemy_feat(
+                query=right_feat,
+                key=left_feat,
+                value=left_feat,
+                need_weights=False
+            )
+
+            left_total_feat = left_friend_feat + left_enemy_feat
+            right_total_feat = right_friend_feat + right_enemy_feat
+
+            left_win = model.feat_to_win(left_total_feat)
+            right_win = model.feat_to_win(right_total_feat)
+
+            delta = torch.zeros(1, 2)
+            delta[0][0] = left_win[0][0] - right_win[0][0]
+
+            if delta.argmax(1) == 0:
+                result = tk.Label(root, text='预测左方获胜，概率为{}'.format(format(nn.Softmax(dim=1)(delta)[0][0], '.4f')), font=('黑体', 15),
+                         width=40, height=2)
+            else:
+                result = tk.Label(root, text='预测右方获胜，概率为{}'.format(format(nn.Softmax(dim=1)(delta)[0][1], '.4f')), font=('黑体', 15),
+                         width=40, height=2)
+            result.place(x=650, y=910)
+
+    def clear():
+        for i in range(61):
+            int_vars_lc[i].set(0)
+            int_vars_rc[i].set(0)
+        for i in range(12):
+            int_vars_court[i].set(0)
+
+        for i in range(3):
+            j = 61
+            tk.Label(root, image=images[j], width=70, height=70).place(x=410 - 80 * i, y=850)
+            tk.Entry(root, width=10).place(x=410 - 80 * i, y=930)
+        for i in range(3):
+            j = 61
+            tk.Label(root, image=images[j], width=70, height=70).place(x=1220 + 80 * i, y=850)
+            tk.Entry(root, width=10).place(x=1220 + 80 * i, y=930)
+
+        tk.Label(root, text='已清零',
+                 font=('黑体', 15),
+                 width=50, height=2).place(x=590, y=910)
+
+    root = tk.Tk()
+    root.title('斗蛐蛐计算器--蜜果城')
+    root.geometry('1707x1067')
+    root.resizable(True, True)
+    root.iconbitmap('cannot_mgc_logo.ico')
+
+
+    int_vars_lc = []
+    int_vars_rc = []
+    int_vars_court = []
+    images = []
+    court = ['altar_diagonal_1',
+             'altar_diagonal_2',
+             'altar_vertical',
+             'block_parallel',
+             'block_vertical_1',
+             'block_vertical_2',
+             'coil_narrow',
+             'coil_wide',
+             'crossbow_side',
+             'crossbow_top',
+             'fire_side',
+             'fire_top']
+
+
+    for i in range(61):
+        images.append(ImageTk.PhotoImage(Image.open('images/{}.png'.format(i + 1))))
+        int_vars_lc.append(tk.IntVar())
+        int_vars_rc.append(tk.IntVar())
+
+    images.append(ImageTk.PhotoImage(Image.open('images/none.png')))
+
+    for i in range(12):
+        int_vars_court.append(tk.IntVar())
+
+    for j in range(7):
+        for i in range(8):
+            tk.Label(root, image=images[i + 8 * j], width=70, height=70).place(x=80 * i + 50, y=100 * j)
+            tk.Label(root, image=images[i + 8 * j], width=70, height=70).place(x=1020 + 80 * i, y=100 * j)
+            tk.Entry(root, textvariable=int_vars_lc[i + 8 * j], width=10).place(x=80 * i + 50, y=80 + 100 * j)
+            tk.Entry(root, textvariable=int_vars_rc[i + 8 * j], width=10).place(x=1020 + 80 * i, y=80 + 100 * j)
+    for i in range(5):
+        tk.Label(root, image=images[i + 56], width=70, height=70).place(x=80 * i + 50, y=700)
+        tk.Label(root, image=images[i + 56], width=70, height=70).place(x=1020 + 80 * i, y=700)
+        tk.Entry(root, textvariable=int_vars_lc[i + 56], width=10).place(x=80 * i + 50, y=780)
+        tk.Entry(root, textvariable=int_vars_rc[i + 56], width=10).place(x=1020 + 80 * i, y=780)
+
+    for i in range(12):
+        tk.Label(root, text=court[i], width=30, font=('黑体', 15), height=2).place(x=700, y=70 * i)
+        tk.Entry(root, textvariable=int_vars_court[i], width=10).place(x=810, y=70 * i + 50)
+
+    tk.Button(root, command=compute, text='确定', font=('黑体', 15), width=10).place(x=720, y=850)
+    tk.Button(root, command=clear, text='清零', font=('黑体', 15), width=10).place(x=860, y=850)
+
+    root.mainloop()
+
+if __name__ == '__main__':
+    main()
+
+
